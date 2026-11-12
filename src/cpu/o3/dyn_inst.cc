@@ -62,7 +62,6 @@ namespace gem5
               _readySrcIdx(arrays.readySrcIdx), macroop(_macroop)
         {
             std::fill(_readySrcIdx, _readySrcIdx + (numSrcs() + 7) / 8, 0);
-            std::fill(_waitingSrcIdx, _waitingSrcIdx + (numSrcs() + 7) / 8, 0);
 
             status.reset();
 

@@ -237,9 +237,6 @@ namespace gem5
             // Whether or not the source register is ready, one bit per register.
             uint8_t *_readySrcIdx;
 
-            // WIB: whether or not the source register is waiting, one bit per register.
-            uint8_t *_waitingSrcIdx;
-
         public:
             size_t numSrcs() const { return _numSrcs; }
             size_t numDests() const { return _numDests; }

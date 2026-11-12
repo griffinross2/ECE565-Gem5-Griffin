@@ -115,7 +115,6 @@ namespace gem5
             // Resize the register scoreboard.
             regScoreboard.resize(numPhysRegs);
             regScoreboardWait.resize(numPhysRegs);
-            regScoreboardWait.assign(numPhysRegs, std::make_pair(false, 0));
 
             // Initialize Mem Dependence Units
             for (ThreadID tid = 0; tid < MaxThreads; tid++)
@@ -225,7 +224,11 @@ namespace gem5
                        "Inst issue rate", instsIssued / cpu->baseStats.numCycles),
               ADD_STAT(fuBusy, statistics::units::Count::get(), "FU busy when requested"),
               ADD_STAT(fuBusyRate, statistics::units::Rate<statistics::units::Count, statistics::units::Count>::get(),
-                       "FU busy rate (busy events/executed inst)")
+                       "FU busy rate (busy events/executed inst)"),
+              ADD_STAT(wibDiverted, statistics::units::Count::get(),
+                       "Number of instructions diverted to the WIB"),
+              ADD_STAT(wibReinserted, statistics::units::Count::get(),
+                       "Number of instructions reinserted from the WIB")
         {
             instsAdded
                 .prereq(instsAdded);
@@ -414,6 +417,7 @@ namespace gem5
             for (int i = 0; i < numPhysRegs; ++i)
             {
                 regScoreboard[i] = false;
+                regScoreboardWait[i] = std::make_pair(false, 0);
             }
 
             for (ThreadID tid = 0; tid < MaxThreads; ++tid)
@@ -943,6 +947,8 @@ namespace gem5
                         regScoreboardWait[dest_reg->flatIndex()].second = wait_seq_num;
                     }
 
+                    iqStats.wibDiverted++;
+
                     continue;
                 }
 
@@ -1292,7 +1298,7 @@ namespace gem5
 
             for (auto &inst : instList[tid])
             {
-                if (inst->isInWIB() && !inst->isSquashed())
+                if (inst->isInWIB() && !inst->isSquashed() && !isFull() && !isFull(tid))
                 {
                     // Check if sources are waiting
                     bool waiting = false;
@@ -1325,6 +1331,7 @@ namespace gem5
                     count[tid]++;
                     assert(freeEntries == (numEntries - countInsts()));
                     wibReinsertCount++;
+                    iqStats.wibReinserted++;
                 }
             }
             return wibReinsertCount;

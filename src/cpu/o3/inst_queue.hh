@@ -556,6 +556,9 @@ namespace gem5
                 statistics::Vector fuBusy;
                 /** Number of times the FU was busy per instruction issued. */
                 statistics::Formula fuBusyRate;
+
+                statistics::Scalar wibDiverted;
+                statistics::Scalar wibReinserted;
             } iqStats;
 
         public:
