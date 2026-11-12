@@ -63,6 +63,7 @@ from common import MemConfig
 from common.FileSystemConfig import config_filesystem
 from common.Caches import *
 from common.cpu2000 import *
+from common import HostGlibc
 
 import spec2k6_spec2k17
 
@@ -289,10 +290,38 @@ class Table1FUPool(FUPool):
                        Table1FP_ALU(fp_alus), Table1FP_MultDiv(fp_mult_div), 
                        ReadPort(), WritePort(), RdWrPort(), IprPort() ]
 
+def _ensure_lib_redirect_dir():
+    # /package/gcc/8.3.0/lib64 is read-only and missing libgfortran.so.3
+    # (needed by leslie3d); mirror it into a writable per-user dir instead.
+    libdir = os.path.expanduser('~/.local/gem5-libs64')
+    os.makedirs(libdir, exist_ok=True)
+
+    src_dir = '/package/gcc/8.3.0/lib64'
+    for name in os.listdir(src_dir):
+        link = os.path.join(libdir, name)
+        if not os.path.lexists(link):
+            try:
+                os.symlink(os.path.join(src_dir, name), link)
+            except FileExistsError:
+                pass
+
+    gfortran3 = os.path.join(libdir, 'libgfortran.so.3')
+    if not os.path.lexists(gfortran3):
+        try:
+            os.symlink('/package/gcc/4.9.4/lib64/libgfortran.so.3', gfortran3)
+        except FileExistsError:
+            pass
+
+    return libdir
+
+args.redirects = ['/lib64=' + _ensure_lib_redirect_dir()]
+
+
 multiprocesses = []
 numThreads = 1
 
 process = spec2k6_spec2k17.get_process(args, buildEnv['TARGET_ISA'])
+HostGlibc.apply(process, args)
 multiprocesses.append(process)
 
 (CPUClass, test_mem_mode, FutureClass) = Simulation.setCPUClass(args)

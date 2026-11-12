@@ -159,7 +159,6 @@ def _ensure_lib_redirect_dir():
 
 args.redirects = ['/lib64=' + _ensure_lib_redirect_dir()]
 
-
 multiprocesses = []
 numThreads = 1
 
