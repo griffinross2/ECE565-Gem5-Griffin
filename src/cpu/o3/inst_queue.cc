@@ -625,6 +625,9 @@ namespace gem5
 
             if (new_inst->isMemRef())
             {
+                if (new_inst->readyToIssue()) {
+                    new_inst->setMemDepRegsReady(true);
+                }
                 memDepUnit[new_inst->threadNumber].insert(new_inst);
             }
             else
@@ -804,6 +807,7 @@ namespace gem5
             // waiting so we can add any fake ready instructions to the ready
             // list for the next cycle.
             std::vector<PhysRegIdPtr> newWaitingDests;
+            std::vector<DynInstPtr> newReadyMemInsts;
 
             DPRINTF(IQ, "Attempting to schedule ready instructions from "
                         "the IQ.\n");
@@ -950,6 +954,27 @@ namespace gem5
 
                     iqStats.wibDiverted++;
 
+                    continue;
+                }
+
+                // Check for memory instructions that were fake ready
+                // and now are actually ready. We still need to update the
+                // MemDepUnit.
+                if (issuing_inst->isMemRef() && !issuing_inst->memDepRegsReady() && 
+                    issuing_inst->readyToIssue()) {
+
+                    readyInsts[op_class].pop();
+                    issuing_inst->setOnReadyList(false);
+
+                    if (!readyInsts[op_class].empty()) {
+                        moveToYoungerInst(order_it);
+                    } else {
+                        readyIt[op_class] = listOrder.end();
+                        queueOnList[op_class] = false;
+                    }
+                    listOrder.erase(order_it++);
+
+                    newReadyMemInsts.push_back(issuing_inst);
                     continue;
                 }
 
@@ -1100,6 +1125,17 @@ namespace gem5
                     }
                 });
             }
+            newWaitingDests.clear();
+
+            // Inform mem dep of newely ready memory instructions
+            for (const auto& inst : newReadyMemInsts) {
+                if (inst->isSquashed()) {
+                    continue;
+                }
+                inst->setMemDepRegsReady(true);
+                memDepUnit[inst->threadNumber].regsReady(inst);
+            }
+            newReadyMemInsts.clear();
 
             // If we issued any instructions, tell the CPU we had activity.
             // @todo If the way deferred memory instructions are handeled due to
@@ -1322,7 +1358,7 @@ namespace gem5
 
         bool InstructionQueue::readyToFakeIssue(const DynInstPtr &inst) const
         {
-            if (inst->isMemRef() || inst->isReadBarrier() || inst->isWriteBarrier() || inst->isNonSpeculative() || inst->isAtomic() || inst->isStoreConditional())
+            if (inst->isIssued() || inst->isReadBarrier() || inst->isWriteBarrier() || inst->isNonSpeculative() || inst->isAtomic() || inst->isStoreConditional())
             {
                 return false;
             }
@@ -1828,14 +1864,15 @@ namespace gem5
             {
 
                 // Add the instruction to the proper ready list.
-                if (inst->isMemRef())
+                if (inst->isMemRef() && inst->readyToIssue())
                 {
-
-                    DPRINTF(IQ, "Checking if memory instruction can issue.\n");
-
                     // Message to the mem dependence unit that this instruction has
-                    // its registers ready.
-                    memDepUnit[inst->threadNumber].regsReady(inst);
+                    // its registers ready (not when fake ready).
+                    if (!inst->memDepRegsReady())
+                    {
+                        inst->setMemDepRegsReady(true);
+                        memDepUnit[inst->threadNumber].regsReady(inst);
+                    }
 
                     return;
                 }

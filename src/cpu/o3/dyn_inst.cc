@@ -59,7 +59,7 @@ namespace gem5
               _numSrcs(arrays.numSrcs), _numDests(arrays.numDests),
               _flatDestIdx(arrays.flatDestIdx), _destIdx(arrays.destIdx),
               _prevDestIdx(arrays.prevDestIdx), _srcIdx(arrays.srcIdx),
-              _readySrcIdx(arrays.readySrcIdx), _isOnReadyList(false), macroop(_macroop)
+              _readySrcIdx(arrays.readySrcIdx), _isOnReadyList(false), _memDepRegsReady(false), macroop(_macroop)
         {
             std::fill(_readySrcIdx, _readySrcIdx + (numSrcs() + 7) / 8, 0);
 

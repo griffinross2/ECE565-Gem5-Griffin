@@ -238,6 +238,7 @@ namespace gem5
             uint8_t *_readySrcIdx;
 
             bool _isOnReadyList;
+            bool _memDepRegsReady;
 
         public:
             size_t numSrcs() const { return _numSrcs; }
@@ -732,6 +733,12 @@ namespace gem5
 
             /** Sets whether this instruction is on the ready list. */
             void setOnReadyList(bool on_ready_list) { _isOnReadyList = on_ready_list; }
+
+            /** Returns whether we have reported regs ready to mem dependency unit. */
+            bool memDepRegsReady() const { return _memDepRegsReady; }
+
+            /** Sets whether we have reported regs ready to mem dependency unit. */
+            void setMemDepRegsReady(bool mem_dep_regs_ready) { _memDepRegsReady = mem_dep_regs_ready; }
 
             /** Records that one of the source registers is ready. */
             void markSrcRegReady();
