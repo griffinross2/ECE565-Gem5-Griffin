@@ -60,6 +60,7 @@
 #include "cpu/timebuf.hh"
 #include "enums/SMTQueuePolicy.hh"
 #include "sim/eventq.hh"
+#include "cpu/reg_class.hh"
 
 namespace gem5
 {
@@ -284,11 +285,14 @@ namespace gem5
             bool readyToFakeIssue(const DynInstPtr &inst) const;
 
             /** Reinserts instructions from the WIB. */
-            unsigned reinsertFromWIB(ThreadID tid);
+            unsigned reinsertFromWIB(ThreadID tid, unsigned maxInsts);
 
         private:
             /** Does the actual squashing. */
             void doSquash(ThreadID tid);
+
+            /** Gets the waiting status of a physical register. */
+            bool getRegWaiting(PhysRegIdPtr reg) const;
 
             /////////////////////////
             // Various pointers

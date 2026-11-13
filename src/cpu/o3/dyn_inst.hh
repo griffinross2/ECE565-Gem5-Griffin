@@ -237,6 +237,8 @@ namespace gem5
             // Whether or not the source register is ready, one bit per register.
             uint8_t *_readySrcIdx;
 
+            bool _isOnReadyList;
+
         public:
             size_t numSrcs() const { return _numSrcs; }
             size_t numDests() const { return _numDests; }
@@ -724,6 +726,12 @@ namespace gem5
                 }
             }
             /** @} */
+
+            /** Returns whether this instruction is on the ready list. */
+            bool isOnReadyList() const { return _isOnReadyList; }
+
+            /** Sets whether this instruction is on the ready list. */
+            void setOnReadyList(bool on_ready_list) { _isOnReadyList = on_ready_list; }
 
             /** Records that one of the source registers is ready. */
             void markSrcRegReady();

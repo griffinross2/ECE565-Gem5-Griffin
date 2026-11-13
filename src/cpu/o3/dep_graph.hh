@@ -119,6 +119,15 @@ class DependencyGraph
      */
     void dump();
 
+    template <typename F>
+    void forEachDependent(RegIndex idx, F &&f) {
+        DepEntry *curr = dependGraph[idx].next;
+        while (curr) {
+            f(curr->inst);
+            curr = curr->next;
+        }
+    }
+
   private:
     /** Array of linked lists.  Each linked list is a list of all the
      *  instructions that depend upon a given register.  The actual

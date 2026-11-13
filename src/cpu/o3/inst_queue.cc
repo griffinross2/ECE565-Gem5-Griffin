@@ -857,6 +857,7 @@ namespace gem5
                 if (issuing_inst->isSquashed())
                 {
                     readyInsts[op_class].pop();
+                    issuing_inst->setOnReadyList(false);
 
                     if (!readyInsts[op_class].empty())
                     {
@@ -875,30 +876,7 @@ namespace gem5
                     continue;
                 }
 
-                int idx = FUPool::NoCapableFU;
-                Cycles op_latency = Cycles(1);
                 ThreadID tid = issuing_inst->threadNumber;
-
-                if (op_class != No_OpClass)
-                {
-                    idx = fuPool->getUnit(op_class);
-                    if (issuing_inst->isFloating())
-                    {
-                        iqIOStats.fpAluAccesses++;
-                    }
-                    else if (issuing_inst->isVector())
-                    {
-                        iqIOStats.vecAluAccesses++;
-                    }
-                    else
-                    {
-                        iqIOStats.intAluAccesses++;
-                    }
-                    if (idx > FUPool::NoFreeFU)
-                    {
-                        op_latency = fuPool->getOpLatency(op_class);
-                    }
-                }
 
                 // Fake ready: send to WIB
                 if (!issuing_inst->readyToIssue() && readyToFakeIssue(issuing_inst))
@@ -907,6 +885,7 @@ namespace gem5
                             tid, issuing_inst->pcState(), issuing_inst->seqNum);
 
                     readyInsts[op_class].pop();
+                    issuing_inst->setOnReadyList(false);
 
                     if (!readyInsts[op_class].empty())
                     {
@@ -927,13 +906,28 @@ namespace gem5
                     // Send to WIB
                     issuing_inst->setInWIB();
 
+                    for (int src_reg_idx = 0;
+                             src_reg_idx < issuing_inst->numSrcRegs();
+                             src_reg_idx++)
+                    {
+                        PhysRegIdPtr src_reg =
+                            issuing_inst->renamedSrcIdx(src_reg_idx);
+
+                        if (!issuing_inst->readySrcIdx(src_reg_idx) &&
+                            !src_reg->isFixedMapping())
+                        {
+                            dependGraph.remove(src_reg->flatIndex(),
+                                                issuing_inst);
+                        }
+                    }
+
                     // Copy waiting status to the instruction's destination
                     // Use first waiting source register
                     InstSeqNum wait_seq_num = 0;
                     for (int i = 0; i < issuing_inst->numSrcRegs(); i++)
                     {
                         PhysRegIdPtr src_reg = issuing_inst->renamedSrcIdx(i);
-                        if (regScoreboardWait[src_reg->flatIndex()].first)
+                        if (getRegWaiting(src_reg))
                         {
                             wait_seq_num = regScoreboardWait[src_reg->flatIndex()].second;
                             break;
@@ -943,6 +937,9 @@ namespace gem5
                     for (int i = 0; i < issuing_inst->numDestRegs(); i++)
                     {
                         PhysRegIdPtr dest_reg = issuing_inst->renamedDestIdx(i);
+                        if (dest_reg->isFixedMapping()) {
+                            continue;
+                        }
                         regScoreboardWait[dest_reg->flatIndex()].first = true;
                         regScoreboardWait[dest_reg->flatIndex()].second = wait_seq_num;
                     }
@@ -950,6 +947,30 @@ namespace gem5
                     iqStats.wibDiverted++;
 
                     continue;
+                }
+
+                int idx = FUPool::NoCapableFU;
+                Cycles op_latency = Cycles(1);
+
+                if (op_class != No_OpClass)
+                {
+                    idx = fuPool->getUnit(op_class);
+                    if (issuing_inst->isFloating())
+                    {
+                        iqIOStats.fpAluAccesses++;
+                    }
+                    else if (issuing_inst->isVector())
+                    {
+                        iqIOStats.vecAluAccesses++;
+                    }
+                    else
+                    {
+                        iqIOStats.intAluAccesses++;
+                    }
+                    if (idx > FUPool::NoFreeFU)
+                    {
+                        op_latency = fuPool->getOpLatency(op_class);
+                    }
                 }
 
                 // If we have an instruction that doesn't require a FU, or a
@@ -996,6 +1017,7 @@ namespace gem5
                             issuing_inst->seqNum);
 
                     readyInsts[op_class].pop();
+                    issuing_inst->setOnReadyList(false);
 
                     if (!readyInsts[op_class].empty())
                     {
@@ -1201,11 +1223,18 @@ namespace gem5
                                 "PC %s.\n",
                             dep_inst->seqNum, dep_inst->pcState());
 
-                    // Might want to give more information to the instruction
-                    // so that it knows which of its source registers is
-                    // ready.  However that would mean that the dependency
-                    // graph entries would need to hold the src_reg_idx.
-                    dep_inst->markSrcRegReady();
+                    for (int src_reg_idx = 0;
+                         src_reg_idx < dep_inst->numSrcRegs();
+                         src_reg_idx++)
+                    {
+                        PhysRegIdPtr src_reg =
+                            dep_inst->renamedSrcIdx(src_reg_idx);
+
+                        if (src_reg == dest_reg)
+                        {
+                            dep_inst->markSrcRegReady(src_reg_idx);
+                        }
+                    }
 
                     addIfReady(dep_inst);
 
@@ -1223,12 +1252,15 @@ namespace gem5
                 regScoreboard[dest_reg->flatIndex()] = true;
 
                 // Make sure to clear waiting for all registers dependent on this load
-                for (size_t i = 0; i < regScoreboardWait.size(); i++)
+                if (completed_inst->isLoad())
                 {
-                    if (regScoreboardWait[i].first &&
-                        regScoreboardWait[i].second == completed_inst->seqNum)
+                    for (size_t i = 0; i < regScoreboardWait.size(); i++)
                     {
-                        regScoreboardWait[i].first = false;
+                        if (regScoreboardWait[i].first &&
+                            regScoreboardWait[i].second == completed_inst->seqNum)
+                        {
+                            regScoreboardWait[i].first = false;
+                        }
                     }
                 }
             }
@@ -1260,11 +1292,21 @@ namespace gem5
                 // Set dest in scoreboard as waiting
                 regScoreboardWait[dest_reg->flatIndex()].first = true;
                 regScoreboardWait[dest_reg->flatIndex()].second = inst->seqNum;
+
+                dependGraph.forEachDependent(dest_reg->flatIndex(), [&](const DynInstPtr &dep_inst) {
+                    // Waiting instructions can be fake issued if there other sources are ready.
+                    addIfReady(dep_inst);
+                });
             }
         }
 
         bool InstructionQueue::readyToFakeIssue(const DynInstPtr &inst) const
         {
+            if (inst->isMemRef() || inst->isReadBarrier() || inst->isWriteBarrier() || inst->isNonSpeculative() || inst->isAtomic() || inst->isStoreConditional())
+            {
+                return false;
+            }
+
             int numReadyRegs = 0;
             int numWaitingRegs = 0;
 
@@ -1275,7 +1317,7 @@ namespace gem5
                 PhysRegIdPtr src_reg =
                     inst->renamedSrcIdx(src_reg_idx);
 
-                if (regScoreboardWait[src_reg->flatIndex()].first)
+                if (getRegWaiting(src_reg))
                 {
                     numWaitingRegs++;
                 }
@@ -1292,12 +1334,17 @@ namespace gem5
             return false;
         }
 
-        unsigned InstructionQueue::reinsertFromWIB(ThreadID tid)
+        unsigned InstructionQueue::reinsertFromWIB(ThreadID tid, unsigned maxInsts)
         {
             unsigned wibReinsertCount = 0;
 
             for (auto &inst : instList[tid])
             {
+                if (wibReinsertCount >= maxInsts)
+                {
+                    break;
+                }
+
                 if (inst->isInWIB() && !inst->isSquashed() && !isFull() && !isFull(tid))
                 {
                     // Check if sources are waiting
@@ -1305,7 +1352,7 @@ namespace gem5
                     for (int src_reg_idx = 0; src_reg_idx < inst->numSrcRegs(); src_reg_idx++)
                     {
                         PhysRegIdPtr src_reg = inst->renamedSrcIdx(src_reg_idx);
-                        if (regScoreboardWait[src_reg->flatIndex()].first)
+                        if (getRegWaiting(src_reg))
                         {
                             waiting = true;
                         }
@@ -1337,12 +1384,21 @@ namespace gem5
             return wibReinsertCount;
         }
 
+        bool InstructionQueue::getRegWaiting(PhysRegIdPtr reg) const {
+            if (reg->isFixedMapping()) {
+                return false;
+            }
+            assert(reg->flatIndex() < regScoreboardWait.size());
+            return regScoreboardWait[reg->flatIndex()].first;
+        }
+
         void
         InstructionQueue::addReadyMemInst(const DynInstPtr &ready_inst)
         {
             OpClass op_class = ready_inst->opClass();
 
             readyInsts[op_class].push(ready_inst);
+            ready_inst->setOnReadyList(true);
 
             // Will need to reorder the list if either a queue is not on the list,
             // or it has an older instruction than last time.
@@ -1512,71 +1568,76 @@ namespace gem5
                     DPRINTF(IQ, "[tid:%i] Instruction [sn:%llu] PC %s squashed.\n",
                             tid, squashed_inst->seqNum, squashed_inst->pcState());
 
-                    bool is_acq_rel = squashed_inst->isFullMemBarrier() &&
-                                      (squashed_inst->isLoad() ||
-                                       (squashed_inst->isStore() &&
-                                        !squashed_inst->isStoreConditional()));
-
-                    // Remove the instruction from the dependency list.
-                    if (is_acq_rel ||
-                        (!squashed_inst->isNonSpeculative() &&
-                         !squashed_inst->isStoreConditional() &&
-                         !squashed_inst->isAtomic() &&
-                         !squashed_inst->isReadBarrier() &&
-                         !squashed_inst->isWriteBarrier()))
+                    if (squashed_inst->isInWIB())
                     {
+                        squashed_inst->clearInWIB();
+                    } else {
+                        bool is_acq_rel = squashed_inst->isFullMemBarrier() &&
+                                        (squashed_inst->isLoad() ||
+                                        (squashed_inst->isStore() &&
+                                            !squashed_inst->isStoreConditional()));
 
-                        for (int src_reg_idx = 0;
-                             src_reg_idx < squashed_inst->numSrcRegs();
-                             src_reg_idx++)
+                        // Remove the instruction from the dependency list.
+                        if (is_acq_rel ||
+                            (!squashed_inst->isNonSpeculative() &&
+                            !squashed_inst->isStoreConditional() &&
+                            !squashed_inst->isAtomic() &&
+                            !squashed_inst->isReadBarrier() &&
+                            !squashed_inst->isWriteBarrier()))
                         {
-                            PhysRegIdPtr src_reg =
-                                squashed_inst->renamedSrcIdx(src_reg_idx);
 
-                            // Only remove it from the dependency graph if it
-                            // was placed there in the first place.
-
-                            // Instead of doing a linked list traversal, we
-                            // can just remove these squashed instructions
-                            // either at issue time, or when the register is
-                            // overwritten.  The only downside to this is it
-                            // leaves more room for error.
-
-                            if (!squashed_inst->readySrcIdx(src_reg_idx) &&
-                                !src_reg->isFixedMapping())
+                            for (int src_reg_idx = 0;
+                                src_reg_idx < squashed_inst->numSrcRegs();
+                                src_reg_idx++)
                             {
-                                dependGraph.remove(src_reg->flatIndex(),
-                                                   squashed_inst);
+                                PhysRegIdPtr src_reg =
+                                    squashed_inst->renamedSrcIdx(src_reg_idx);
+
+                                // Only remove it from the dependency graph if it
+                                // was placed there in the first place.
+
+                                // Instead of doing a linked list traversal, we
+                                // can just remove these squashed instructions
+                                // either at issue time, or when the register is
+                                // overwritten.  The only downside to this is it
+                                // leaves more room for error.
+
+                                if (!squashed_inst->readySrcIdx(src_reg_idx) &&
+                                    !src_reg->isFixedMapping())
+                                {
+                                    dependGraph.remove(src_reg->flatIndex(),
+                                                    squashed_inst);
+                                }
+
+                                ++iqStats.squashedOperandsExamined;
                             }
-
-                            ++iqStats.squashedOperandsExamined;
                         }
-                    }
-                    else if (!squashed_inst->isStoreConditional() ||
-                             !squashed_inst->isCompleted())
-                    {
-                        NonSpecMapIt ns_inst_it =
-                            nonSpecInsts.find(squashed_inst->seqNum);
-
-                        // we remove non-speculative instructions from
-                        // nonSpecInsts already when they are ready, and so we
-                        // cannot always expect to find them
-                        if (ns_inst_it == nonSpecInsts.end())
+                        else if (!squashed_inst->isStoreConditional() ||
+                                !squashed_inst->isCompleted())
                         {
-                            // loads that became ready but stalled on a
-                            // blocked cache are alreayd removed from
-                            // nonSpecInsts, and have not faulted
-                            assert(squashed_inst->getFault() != NoFault ||
-                                   squashed_inst->isMemRef());
-                        }
-                        else
-                        {
+                            NonSpecMapIt ns_inst_it =
+                                nonSpecInsts.find(squashed_inst->seqNum);
 
-                            (*ns_inst_it).second = NULL;
+                            // we remove non-speculative instructions from
+                            // nonSpecInsts already when they are ready, and so we
+                            // cannot always expect to find them
+                            if (ns_inst_it == nonSpecInsts.end())
+                            {
+                                // loads that became ready but stalled on a
+                                // blocked cache are alreayd removed from
+                                // nonSpecInsts, and have not faulted
+                                assert(squashed_inst->getFault() != NoFault ||
+                                    squashed_inst->isMemRef());
+                            }
+                            else
+                            {
 
-                            nonSpecInsts.erase(ns_inst_it);
+                                (*ns_inst_it).second = NULL;
 
-                            ++iqStats.squashedNonSpecRemoved;
+                                nonSpecInsts.erase(ns_inst_it);
+
+                                ++iqStats.squashedNonSpecRemoved;
+                            }
                         }
                     }
 
@@ -1589,12 +1650,16 @@ namespace gem5
                     // inst will flow through the rest of the pipeline.
                     squashed_inst->setIssued();
                     squashed_inst->setCanCommit();
-                    squashed_inst->clearInIQ();
 
-                    // Update Thread IQ Count
-                    count[squashed_inst->threadNumber]--;
+                    if (!squashed_inst->isInWIB())
+                    {
+                        squashed_inst->clearInIQ();
 
-                    ++freeEntries;
+                        // Update Thread IQ Count
+                        count[squashed_inst->threadNumber]--;
+
+                        ++freeEntries;
+                    }
                 }
 
                 // IQ clears out the heads of the dependency graph only when
@@ -1749,6 +1814,7 @@ namespace gem5
                         inst->pcState(), op_class, inst->seqNum);
 
                 readyInsts[op_class].push(inst);
+                inst->setOnReadyList(true);
 
                 // Will need to reorder the list if either a queue is not on the list,
                 // or it has an older instruction than last time.

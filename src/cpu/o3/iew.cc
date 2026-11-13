@@ -1303,9 +1303,6 @@ namespace gem5
                         // event adds the instruction to the queue to commit
                         fault = ldstQueue.executeLoad(inst);
 
-                        // Make dependents wait in the WIB
-                        instQueue.markDependentsWaiting(inst);
-
                         if (inst->isTranslationDelayed() &&
                             fault == NoFault)
                         {
@@ -1315,6 +1312,11 @@ namespace gem5
                                          "load.\n");
                             instQueue.deferMemInst(inst);
                             continue;
+                        }
+
+                        // Make dependents wait in the WIB
+                        if (!inst->isSquashed() && fault == NoFault) {
+                            instQueue.markDependentsWaiting(inst);
                         }
 
                         if (inst->isDataPrefetch() || inst->isInstPrefetch())
@@ -1575,7 +1577,7 @@ namespace gem5
                 checkSignalsAndUpdate(tid);
 
                 // Reinsert from WIB first
-                wibReinserted[tid] = instQueue.reinsertFromWIB(tid);
+                wibReinserted[tid] = instQueue.reinsertFromWIB(tid, dispatchWidth);
 
                 dispatch(tid);
             }
