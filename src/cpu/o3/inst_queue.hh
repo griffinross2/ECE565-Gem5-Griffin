@@ -467,7 +467,6 @@ class InstructionQueue
      */
     std::vector<bool> regScoreboard;
     unsigned wibCount[MaxThreads];
-    unsigned wibHighWatermark;
 
     // Scoreboard for the WIB wait bits/load instruction pointer
     // Bool is the wait bit, InstSeqNum is the sequence number of the

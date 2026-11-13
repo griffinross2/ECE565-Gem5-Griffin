@@ -405,8 +405,6 @@ InstructionQueue::resetState()
         instList[tid].clear();
     }
 
-    wibHighWatermark = 0;
-
     // Initialize the number of free IQ entries.
     freeEntries = numEntries;
 
@@ -862,9 +860,8 @@ InstructionQueue::scheduleReadyInsts()
             // Send to WIB
             issuing_inst->setInWIB();
             wibCount[tid]++;
-            if (wibCount[tid] > wibHighWatermark) {
-                wibHighWatermark = wibCount[tid];
-                iqStats.wibHighWatermark = wibHighWatermark;
+            if (wibCount[tid] > iqStats.wibHighWatermark.value()) {
+                iqStats.wibHighWatermark = wibCount[tid];
             }
 
             for (int src_reg_idx = 0;
