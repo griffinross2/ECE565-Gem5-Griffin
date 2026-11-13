@@ -1133,6 +1133,22 @@ IEW::printAvailableInsts()
     std::cout << "\n";
 }
 
+bool
+loadMissed(const DynInstPtr &inst)
+{
+    LSQ::LSQRequest *req = inst->savedRequest;
+
+    if (!req || req->_numOutstandingPackets == 0)
+        return false;
+
+    // If a request went lower than L1 it missed
+    for (const auto &r : req->_reqs) {
+        if (r->getAccessDepth() > 0)
+            return true;
+    }
+    return false;
+}
+
 void
 IEW::executeInsts()
 {
@@ -1226,7 +1242,7 @@ IEW::executeInsts()
                 }
 
                 // Make dependents wait in the WIB
-                if (!inst->isSquashed() && fault == NoFault) {
+                if (!inst->isSquashed() && fault == NoFault && loadMissed(inst)) {
                     instQueue.markDependentsWaiting(inst);
                 }
 
