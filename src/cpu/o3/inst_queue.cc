@@ -220,7 +220,9 @@ InstructionQueue::IQStats::IQStats(CPU *cpu, const unsigned &total_width)
     ADD_STAT(wibDiverted, statistics::units::Count::get(),
             "Number of instructions diverted to the WIB"),
     ADD_STAT(wibReinserted, statistics::units::Count::get(),
-            "Number of instructions reinserted from the WIB")
+            "Number of instructions reinserted from the WIB"),
+    ADD_STAT(wibHighWatermark, statistics::units::Count::get(),
+            "High watermark of instructions in the WIB")
 {
     instsAdded
         .prereq(instsAdded);
@@ -399,8 +401,11 @@ InstructionQueue::resetState()
     //Initialize thread IQ counts
     for (ThreadID tid = 0; tid < MaxThreads; tid++) {
         count[tid] = 0;
+        wibCount[tid] = 0;
         instList[tid].clear();
     }
+
+    wibHighWatermark = 0;
 
     // Initialize the number of free IQ entries.
     freeEntries = numEntries;
@@ -856,6 +861,11 @@ InstructionQueue::scheduleReadyInsts()
 
             // Send to WIB
             issuing_inst->setInWIB();
+            wibCount[tid]++;
+            if (wibCount[tid] > wibHighWatermark) {
+                wibHighWatermark = wibCount[tid];
+                iqStats.wibHighWatermark = wibHighWatermark;
+            }
 
             for (int src_reg_idx = 0;
                         src_reg_idx < issuing_inst->numSrcRegs();
@@ -1294,6 +1304,11 @@ bool InstructionQueue::readyToFakeIssue(const DynInstPtr &inst) const
 
 unsigned InstructionQueue::reinsertFromWIB(ThreadID tid, unsigned maxInsts)
 {
+    if (wibCount[tid] == 0)
+    {
+        return 0;
+    }
+
     unsigned wibReinsertCount = 0;
 
     for (auto &inst : instList[tid])
@@ -1340,6 +1355,7 @@ unsigned InstructionQueue::reinsertFromWIB(ThreadID tid, unsigned maxInsts)
             --freeEntries;
             inst->setInIQ();
             inst->clearInWIB();
+            wibCount[tid]--;
             addToDependents(inst);
             addIfReady(inst);
             count[tid]++;
@@ -1518,69 +1534,71 @@ InstructionQueue::doSquash(ThreadID tid)
             DPRINTF(IQ, "[tid:%i] Instruction [sn:%llu] PC %s squashed.\n",
                     tid, squashed_inst->seqNum, squashed_inst->pcState());
 
-        if (squashed_inst->isInWIB())
-        {
-            squashed_inst->clearInWIB();
-        } else {
-            bool is_acq_rel = squashed_inst->isFullMemBarrier() &&
-                         (squashed_inst->isLoad() ||
-                          (squashed_inst->isStore() &&
-                             !squashed_inst->isStoreConditional()));
+            if (squashed_inst->isInWIB())
+            {
+                squashed_inst->clearInWIB();
+                wibCount[tid]--;
+            } else {
+                bool is_acq_rel = squashed_inst->isFullMemBarrier() &&
+                            (squashed_inst->isLoad() ||
+                            (squashed_inst->isStore() &&
+                                !squashed_inst->isStoreConditional()));
 
-            // Remove the instruction from the dependency list.
-            if (is_acq_rel ||
-                (!squashed_inst->isNonSpeculative() &&
-                 !squashed_inst->isStoreConditional() &&
-                 !squashed_inst->isAtomic() &&
-                 !squashed_inst->isReadBarrier() &&
-                 !squashed_inst->isWriteBarrier())) {
+                // Remove the instruction from the dependency list.
+                if (is_acq_rel ||
+                    (!squashed_inst->isNonSpeculative() &&
+                    !squashed_inst->isStoreConditional() &&
+                    !squashed_inst->isAtomic() &&
+                    !squashed_inst->isReadBarrier() &&
+                    !squashed_inst->isWriteBarrier())) {
 
-                for (int src_reg_idx = 0;
-                     src_reg_idx < squashed_inst->numSrcRegs();
-                     src_reg_idx++)
-                {
-                    PhysRegIdPtr src_reg =
-                        squashed_inst->renamedSrcIdx(src_reg_idx);
+                    for (int src_reg_idx = 0;
+                        src_reg_idx < squashed_inst->numSrcRegs();
+                        src_reg_idx++)
+                    {
+                        PhysRegIdPtr src_reg =
+                            squashed_inst->renamedSrcIdx(src_reg_idx);
 
-                    // Only remove it from the dependency graph if it
-                    // was placed there in the first place.
+                        // Only remove it from the dependency graph if it
+                        // was placed there in the first place.
 
-                    // Instead of doing a linked list traversal, we
-                    // can just remove these squashed instructions
-                    // either at issue time, or when the register is
-                    // overwritten.  The only downside to this is it
-                    // leaves more room for error.
+                        // Instead of doing a linked list traversal, we
+                        // can just remove these squashed instructions
+                        // either at issue time, or when the register is
+                        // overwritten.  The only downside to this is it
+                        // leaves more room for error.
 
-                    if (!squashed_inst->readySrcIdx(src_reg_idx) &&
-                        !src_reg->isFixedMapping()) {
-                        dependGraph.remove(src_reg->flatIndex(),
-                                           squashed_inst);
+                        if (!squashed_inst->readySrcIdx(src_reg_idx) &&
+                            !src_reg->isFixedMapping()) {
+                            dependGraph.remove(src_reg->flatIndex(),
+                                            squashed_inst);
+                        }
+
+                        ++iqStats.squashedOperandsExamined;
                     }
 
-                    ++iqStats.squashedOperandsExamined;
-                }
+                } else if (!squashed_inst->isStoreConditional() ||
+                        !squashed_inst->isCompleted()) {
+                    NonSpecMapIt ns_inst_it =
+                        nonSpecInsts.find(squashed_inst->seqNum);
 
-            } else if (!squashed_inst->isStoreConditional() ||
-                       !squashed_inst->isCompleted()) {
-                NonSpecMapIt ns_inst_it =
-                    nonSpecInsts.find(squashed_inst->seqNum);
+                    // we remove non-speculative instructions from
+                    // nonSpecInsts already when they are ready, and so we
+                    // cannot always expect to find them
+                    if (ns_inst_it == nonSpecInsts.end()) {
+                        // loads that became ready but stalled on a
+                        // blocked cache are alreayd removed from
+                        // nonSpecInsts, and have not faulted
+                        assert(squashed_inst->getFault() != NoFault ||
+                            squashed_inst->isMemRef());
+                    } else {
 
-                // we remove non-speculative instructions from
-                // nonSpecInsts already when they are ready, and so we
-                // cannot always expect to find them
-                if (ns_inst_it == nonSpecInsts.end()) {
-                    // loads that became ready but stalled on a
-                    // blocked cache are alreayd removed from
-                    // nonSpecInsts, and have not faulted
-                    assert(squashed_inst->getFault() != NoFault ||
-                           squashed_inst->isMemRef());
-                } else {
+                        (*ns_inst_it).second = NULL;
 
-                    (*ns_inst_it).second = NULL;
+                        nonSpecInsts.erase(ns_inst_it);
 
-                    nonSpecInsts.erase(ns_inst_it);
-
-                    ++iqStats.squashedNonSpecRemoved;
+                        ++iqStats.squashedNonSpecRemoved;
+                    }
                 }
             }
 

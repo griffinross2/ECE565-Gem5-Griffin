@@ -466,6 +466,8 @@ class InstructionQueue
      *  the scoreboard that exists in the rename map.
      */
     std::vector<bool> regScoreboard;
+    unsigned wibCount[MaxThreads];
+    unsigned wibHighWatermark;
 
     // Scoreboard for the WIB wait bits/load instruction pointer
     // Bool is the wait bit, InstSeqNum is the sequence number of the
@@ -562,6 +564,7 @@ class InstructionQueue
 
         statistics::Scalar wibDiverted;
         statistics::Scalar wibReinserted;
+        statistics::Scalar wibHighWatermark;
     } iqStats;
 
    public:
