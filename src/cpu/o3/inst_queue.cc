@@ -1463,6 +1463,7 @@ namespace gem5
             OpClass op_class = ready_inst->opClass();
 
             readyInsts[op_class].push(ready_inst);
+            ready_inst->setCanIssue();
             ready_inst->setOnReadyList(true);
 
             // Will need to reorder the list if either a queue is not on the list,
