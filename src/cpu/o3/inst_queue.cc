@@ -800,7 +800,10 @@ namespace gem5
         void
         InstructionQueue::scheduleReadyInsts()
         {
-            std::vector<DynInstPtr> loadsIssued;
+            // We will need to keep track of destination registers newly marked
+            // waiting so we can add any fake ready instructions to the ready
+            // list for the next cycle.
+            std::vector<PhysRegIdPtr> newWaitingDests;
 
             DPRINTF(IQ, "Attempting to schedule ready instructions from "
                         "the IQ.\n");
@@ -942,10 +945,30 @@ namespace gem5
                         }
                         regScoreboardWait[dest_reg->flatIndex()].first = true;
                         regScoreboardWait[dest_reg->flatIndex()].second = wait_seq_num;
+                        newWaitingDests.push_back(dest_reg);
                     }
 
                     iqStats.wibDiverted++;
 
+                    continue;
+                }
+
+                // Make sure the instruction is ready to issue
+                if (!issuing_inst->readyToIssue()) {
+                    readyInsts[op_class].pop();
+                    issuing_inst->setOnReadyList(false);
+
+                    if (!readyInsts[op_class].empty()) 
+                    {
+                        moveToYoungerInst(order_it);
+                    } 
+                    else 
+                    {
+                        readyIt[op_class] = listOrder.end();
+                        queueOnList[op_class] = false;
+                    }
+
+                    listOrder.erase(order_it++);
                     continue;
                 }
 
@@ -1050,11 +1073,6 @@ namespace gem5
                     else
                     {
                         memDepUnit[tid].issue(issuing_inst);
-
-                        if (issuing_inst->isLoad())
-                        {
-                            loadsIssued.push_back(issuing_inst);
-                        }
                     }
 
                     listOrder.erase(order_it++);
@@ -1070,6 +1088,18 @@ namespace gem5
 
             iqStats.numIssuedDist.sample(total_issued);
             iqStats.instsIssued += total_issued;
+
+            // Add any newly fake-ready instructions to the ready list
+            // for the next cycle.
+            for (const auto& dest : newWaitingDests)
+            {
+                dependGraph.forEachDependent(dest->flatIndex(), [this](const DynInstPtr& dep_inst) {
+                    if (readyToFakeIssue(dep_inst))
+                    {
+                        addIfReady(dep_inst);
+                    }
+                });
+            }
 
             // If we issued any instructions, tell the CPU we had activity.
             // @todo If the way deferred memory instructions are handeled due to
@@ -1230,9 +1260,11 @@ namespace gem5
                         PhysRegIdPtr src_reg =
                             dep_inst->renamedSrcIdx(src_reg_idx);
 
-                        if (src_reg == dest_reg)
+                        if (!dep_inst->readySrcIdx(src_reg_idx) &&
+                            src_reg->flatIndex() == dest_reg->flatIndex())
                         {
                             dep_inst->markSrcRegReady(src_reg_idx);
+                            break;
                         }
                     }
 
@@ -1250,19 +1282,7 @@ namespace gem5
 
                 // Mark the scoreboard as having that register ready.
                 regScoreboard[dest_reg->flatIndex()] = true;
-
-                // Make sure to clear waiting for all registers dependent on this load
-                if (completed_inst->isLoad())
-                {
-                    for (size_t i = 0; i < regScoreboardWait.size(); i++)
-                    {
-                        if (regScoreboardWait[i].first &&
-                            regScoreboardWait[i].second == completed_inst->seqNum)
-                        {
-                            regScoreboardWait[i].first = false;
-                        }
-                    }
-                }
+                regScoreboardWait[dest_reg->flatIndex()].first = false;
             }
             return dependents;
         }
@@ -1368,6 +1388,15 @@ namespace gem5
                     // No longer waiting, reinsert
                     DPRINTF(IQ, "WIB -> IQ instruction [sn:%llu] PC %s\n",
                             inst->seqNum, inst->pcState());
+
+                    for (int dest_reg_idx = 0; dest_reg_idx < inst->numDestRegs(); dest_reg_idx++)
+                    {
+                        PhysRegIdPtr dest_reg = inst->renamedDestIdx(dest_reg_idx);
+                        if (!dest_reg->isFixedMapping())
+                        {
+                            regScoreboardWait[dest_reg->flatIndex()].first = false;
+                        }
+                    }
 
                     assert(freeEntries != 0);
                     --freeEntries;
@@ -1789,6 +1818,10 @@ namespace gem5
         void
         InstructionQueue::addIfReady(const DynInstPtr &inst)
         {
+            if (inst->isOnReadyList()) {
+                return;
+            }
+
             // If the instruction now has all of its source registers
             // available, then add it to the list of ready instructions.
             if (inst->readyToIssue() || readyToFakeIssue(inst))
